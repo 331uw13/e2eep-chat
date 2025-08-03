@@ -1,2 +1,12 @@
 # e2eep-chat
-end to end encrypted private chat.
+End to end encrypted private chat.
+
+-------------------------------------
+
+```
+Freedom of speech and personal privacy should be available for everyone everywhere.
+```
+
+
+**e2eep-chat allows users to create private and secure communication with your friends or create public servers**
+> ... At least thats the idea. Work in progres...
