@@ -8,5 +8,5 @@ Freedom of speech and personal privacy should be available for everyone everywhe
 ```
 
 
-**e2eep-chat allows users to create private and secure communication with your friends or create public servers**
+**e2eep-chat allows users to create private and secure communication with your friends / community**
 > ... At least thats the idea. Work in progres...
