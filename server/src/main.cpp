@@ -11,7 +11,8 @@ int main(int argc, char** argv) {
     Server server;
     ServerConfig server_config = {
         .max_clients = 10,
-        .port = 4045
+        .port = 4045,
+        .welcome_msg = "Welcome to the testing server."
     };
 
 

@@ -2,18 +2,25 @@
 #define SERVER_CLIENT_HPP
 
 #include <string>
+#include "../../shared/ext/libsam3.h"
+#include "../../shared/packets.hpp"
 
 
 class ServerClient {
     public:
 
-        int fd;
+        Sam3Connection* conn;
         std::string name;
 
-        ServerClient(int _fd, const std::string& _name) {
-            fd = _fd;
-            name = _name;
+
+        ServerClient(
+                Sam3Connection* _conn
+        ){
+            conn = _conn;
+            name = "Unknown";
         }
+
+
 
     private:
 

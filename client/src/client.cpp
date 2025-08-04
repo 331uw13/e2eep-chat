@@ -3,182 +3,204 @@
 #include <strings.h>
 #include <sys/types.h>
 #include <arpa/inet.h>
+#include <ncurses.h>
+
 #include <cstring>
 
 #include "client.hpp"
 #include "../../shared/log.hpp"
 #include "../../shared/util.hpp"
-
-
-#define SOCKS5_PROXY_IP "127.0.0.1"
-#define SOCKS5_PROXY_PORT 9050
+#include "../../shared/colors.hpp"
 
 
 
+bool Client::connect2server(const char* destination, const char* nickname) {
+    constexpr int DESTKEY_SIZE = 616;
+    char destkey[DESTKEY_SIZE+1] = { 0 };
 
-bool Client::connect2proxy() {
+    FILE* file = fopen(destination, "rb");
+    if(file != NULL) {
+        bool read_ok = (fread(destkey, DESTKEY_SIZE, 1, file) != 1);
+        fclose(file);
 
-    printf("SOCKS5 Proxy address: %s\n", SOCKS5_PROXY_IP);
-    printf("SOCKS5 Proxy port: %i\n", SOCKS5_PROXY_PORT);
+        if(!read_ok) {
+            log_print(ERROR, "Failed to read '%s'", destination);
+            return false;
+        }
+    }
 
-    this->proxyaddr.sin_family = AF_INET;
-    this->proxyaddr.sin_port = htons(SOCKS5_PROXY_PORT);
 
-    // Convert IPv4 address to binary form.
-    inet_pton(AF_INET, SOCKS5_PROXY_IP, &this->proxyaddr.sin_addr);
+    if(!sam3CheckValidKeyLength(destkey)) {
+        log_print(ERROR, "'%s' has invalid key length!",
+                destination);
+        return false;
+    }
 
-    this->sockfd = -1;
-    this->sockfd = socket(AF_INET, SOCK_STREAM, 0);
-    if(this->sockfd < 0) {
-        log_print(ERROR, "Failed to open socket.");
+    printf("Creating session...\n");
+    if(sam3CreateSilentSession(&this->session,
+                SAM3_HOST_DEFAULT,
+                SAM3_PORT_DEFAULT,
+                SAM3_DESTINATION_TRANSIENT,
+                SAM3_SESSION_STREAM,
+                EdDSA_SHA512_Ed25519, NULL) < 0) {
+        log_print(ERROR, "Failed to create session.");
+        return false;
+    }
+
+    this->session_open = true;
+
+    printf("Connecting...\n");
+    this->conn = NULL;
+    this->conn = sam3StreamConnect(&this->session, destkey);
+    if(!this->conn) {
+        log_print(ERROR, "Failed to connect. %s", this->session.error);
         return false;
     }
 
 
-    int connect_result =
-        connect(this->sockfd, 
-                (struct sockaddr*)&this->proxyaddr,
-                sizeof(this->proxyaddr));
-
-    if(connect_result != 0) {
-        log_print(ERROR, "Failed to connect to proxy.");
-        close(this->sockfd);
+    // Server will ask for user nickname.
+   
+    PacketID r_id = PacketID::EMPTY;
+    if(!Util::receive_data(this->conn->fd, &r_id, NULL)) {
+        log_print(ERROR, "Server didnt ask for nickname.");
         return false;
     }
 
+    if(r_id != PacketID::ASKING_NICKNAME) {
+        log_print(ERROR, "Expected 0x%x. got 0x%x",
+                PacketID::ASKING_NICKNAME, r_id);
+        return false;
+    }
+
+
+    Util::send_packet(this->conn->fd, PacketID::NICKNAME, nickname);
+    printf("\033[90m(server is validating nickname...)\033[0m\n");
+
+    PacketID name_resp_id = PacketID::EMPTY;
+    std::string name_resp_str = ""; // NOTE: Probably want this outside of this scope.
+    if(!Util::receive_data(this->conn->fd, &name_resp_id, &name_resp_str)) {
+        log_print(ERROR, "Could not receive name verification response.");
+        return false;
+    }
+
+    if(name_resp_id == PacketID::NICKNAME_BAD) {
+        printf("[Server]: %s\n", name_resp_str.c_str());
+        return false;
+    }
+  
+
+
+    m_msgrecv_th = std::thread(&Client::m_msgrecv_th__func, this);
+
+
+    m_running = true;
     return true;
 }
 
 
-bool Client::connect2server(const char* onion_addr, uint16_t port) {
-    printf("Trying to connect to server with port %i\n", port);
-    if(!onion_addr) {
-        log_print(ERROR, "Empty onion address is not valid.");
-        return false;
-    }
-
-    size_t onion_addr_len = strlen(onion_addr);
-    if(onion_addr_len < 60) {
-        log_print(ERROR, "Invalid onion address.");
-        return false;
-    }
+void Client::disconnect() {
+    m_threads_running = false;
+    m_msgrecv_th.join();
     
-
-    uint8_t method_packet[3] = {
-        0x05, // Version
-        0x01,  // Number of methods.
-        0x0   // Method. No authentication required.
-    };
-
-    send(this->sockfd, method_packet, sizeof(method_packet), 0);
-
-    int8_t method_response[2] = { 0 };
-    if(Util::wait_for_socket(this->sockfd, 
-                Util::DEFAULT_TIMEOUT, Util::TimeoutAct::IS_ERROR)) {
-        recv(this->sockfd, method_response, 2, MSG_WAITALL);
+    if(this->conn) {
+        sam3CloseConnection(this->conn);
+        printf("Connection closed.\n");
+        this->conn = NULL;
     }
-    else { return false; }
-
-    /*
-    if(!Util::wait_for_data(
-                this->sockfd,
-                method_response, 2,
-                Util::DEFAULT_TIMEOUT)) {
-        return false;
+    if(this->session_open) {
+        sam3CloseSession(&this->session);
+        printf("Session closed.\n");
+        this->session_open = false;
     }
-    */
-
-    if(method_response[1] != 0) {
-        log_print(ERROR, "Proxy method selection failed.\n");
-        return false;
-    }
-
-    printf("Proxy method response is good.\n");
-
-    constexpr uint32_t CONNECT_PACKET_SIZE = 512;
-    int8_t connect_packet[CONNECT_PACKET_SIZE] = {
-        0x05,  // Version.
-        0x01,  // CMD: Connect.
-        0x0,   // <Reserved>
-        0x03,  // Address type: Domain.
-        (int8_t)onion_addr_len
-    };
-
-    uint32_t data_size = 5;
-
-    memmove(connect_packet + data_size,
-            onion_addr,
-            onion_addr_len);
-    data_size += onion_addr_len;
-
-    if(data_size+2 > CONNECT_PACKET_SIZE) {
-        log_print(ERROR, "Too much data for connection request.");
-        return false;
-    }
-
-    connect_packet[data_size++] = (port >> 8) & 0xFF;
-    connect_packet[data_size++] = (port)      & 0xFF;
-
-    printf("Sending connection request...\n");
-    send(this->sockfd, connect_packet, data_size, 0);
-
-    printf("Waiting for response...\n");
-    int8_t connect_response[10] = { 0 };
-    if(Util::wait_for_socket(this->sockfd, 
-                Util::DEFAULT_TIMEOUT, Util::TimeoutAct::IS_ERROR)) {
-        recv(this->sockfd, connect_response, 10, MSG_WAITALL);
-    }
-    else { return false; }
-    /*
-    if(!Util::wait_for_data(
-                this->sockfd,
-                connect_response, 10,
-                Util::DEFAULT_TIMEOUT)) {
-        return false;
-    }*/
-
-    //uint8_t connect_response[10] = { 0 };
-    //recv(this->sockfd, connect_response, 10, 0);
-   
-    switch(connect_response[1]) {
-        case 0x00:
-            printf("Connected.\n");
-            break;
-        case 0x01:
-            printf("General SOCKS server failure.\n");
-            break;
-        case 0x02:
-            printf("Connection not allowed by ruleset\n");
-            break;
-        case 0x03:
-            printf("Network unreachable.\n");
-            break;
-        case 0x04:
-            printf("Host unreachable.\n");
-            break;
-        case 0x05:
-            printf("Connection refused.\n");
-            break;
-        case 0x06:
-            printf("TTL expired.\n");
-            break;
-        case 0x07:
-            printf("Command not supported.\n");
-            break;
-        case 0x08:
-            printf("Address type not supported.\n");
-            break;
-    }
-
-    return (connect_response[1] == 0x00);
 }
 
 
-void Client::disconnect() {
-    if(this->sockfd > 0) {
-        close(this->sockfd);
-        this->sockfd = -1;
-        printf("Disconnected.\n");
+void Client::m_msgrecv_th__func() {
+    std::string msg = "";
+    msg.reserve(1024);
+    while(m_threads_running) {
+
+        msg.clear();
+        PacketID p_id = PacketID::EMPTY;
+
+        if(!Util::wait_for_socket(this->conn->fd, 1, Util::TimeoutAct::DO_NOTHING)) {
+            goto skip_msg;
+        }
+        if(!Util::receive_data(this->conn->fd, &p_id, &msg)) {
+            goto skip_msg;
+        }
+
+
+        switch(p_id) {
+            case PacketID::MESSAGE:
+                m_msgbuf_mutex.lock();
+                m_msgbuf.push_back((Message) { .name_color = Color::WHITE, .message = msg });
+                m_msgbuf_mutex.unlock();
+                break;
+
+        }
+
+skip_msg:
+        std::this_thread::sleep_for(
+                std::chrono::milliseconds(2000));
+    }
+}
+
+
+#define USE_COLOR(c) attron(COLOR_PAIR(c))
+
+
+
+
+void Client::m_draw_tui() {
+    
+    getmaxyx(stdscr, this->term_height, this->term_width);
+    const int input_x = 2;
+    const int input_y = this->term_height - 2;
+    move(input_y, input_x);
+    clrtoeol();
+
+    USE_COLOR(Color::DARK_BEIGE_0);
+    wborder(stdscr, '|', '|', '=', '=', '+', '+', '+', '+');
+    move(input_y-1, input_x-1);
+    whline(stdscr, '-', (term_width-input_x)-1);
+
+
+    m_msgbuf_mutex.lock();
+    for(int i = 0; i < m_msgbuf.size(); i++) {
+        mvaddstr(i+1, 2, m_msgbuf[i].message.c_str());
+    }
+    m_msgbuf_mutex.unlock();
+
+    // Input "box".
+    USE_COLOR(Color::GREEN);
+    mvaddstr(input_y, input_x, m_input.c_str());
+    mvaddch(input_y, input_x + m_input.size(), '<');
+}
+
+
+void Client::enter_loop() {
+    m_input.clear();
+    m_draw_tui();
+
+    while(m_running) {
+
+        char input_ch = getch();
+        if((input_ch >= 0x20) && (input_ch <= 0x7E)) {
+            m_input.push_back(input_ch);
+        }
+
+        if(input_ch == 0x0A) {
+            if(m_input == "/leave") {
+                Util::send_packet(this->conn->fd, PacketID::LEAVING);
+                m_running = false;
+            }
+
+            m_input.clear();
+        }
+
+        m_draw_tui();
+        refresh();
     }
 }
 
