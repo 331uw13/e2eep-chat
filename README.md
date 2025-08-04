@@ -1,11 +1,8 @@
 # e2eep-chat
-End to end encrypted private chat.
+End to end encrypted private chat in i2P network using SAM 3.1 protocol.
 
 -------------------------------------
 
-```
-Freedom of speech and personal privacy should be available for everyone everywhere.
-```
 
 
 **e2eep-chat allows users to create private and secure communication with your friends / community**
