@@ -3,13 +3,14 @@
 #include <strings.h>
 #include <errno.h>
 #include <sys/types.h>
+#include <poll.h>
+#include <openssl/rand.h>
 
 #include <cstring>
 #include <chrono>
 
 #include "server.hpp"
 #include "../../shared/log.hpp"
-#include "../../shared/util.hpp"
 
 
 bool Server::start(const ServerConfig& config) {
@@ -69,19 +70,10 @@ bool Server::start(const ServerConfig& config) {
                 printf("Clients online: %li / %i\n", m_clients.size(), m_config.max_clients);
                 m_clients_mutex.unlock();
             }
-            else
-            if(strcmp(buffer, "msgs\n") == 0) {
-                printf("msgs: no messages.\n");
-            }
-            else
-            if(strcmp(buffer, "test\n") == 0) {
-            }
             else {
                 printf("Unknown command. Commands are:\n"
                         "end     :  shutdown server.\n"
                         "online  :  number of clients online.\n"
-                        "msgs    :  see messages.\n"
-                        "test    :  send test packet\n"
                         );
             }
         }
@@ -103,13 +95,13 @@ void Server::stop() {
 }
     
 
-#include <poll.h>
 
 void Server::m_packetrecv_th__func() {
-    std::string msg = "";
-    msg.reserve(1024);
+    //std::string msg = "";
+    //msg.reserve(1024);
 
-    int test = 0;
+    Packet packet;
+
     while(m_threads_running) {
 
         m_clients_mutex.lock();
@@ -122,50 +114,59 @@ void Server::m_packetrecv_th__func() {
                 continue;
             }
 
-            struct pollfd pfd;
-            pfd.fd = client->conn->fd;
-            pfd.events = POLLIN;
-            
-            int poll_result = poll(&pfd, (nfds_t)1, 100);
-            if(poll_result <= 0) {
-                printf("\033[90m...\033[0m\n");
+            if(!Util::socket_ready_inms(client->conn->fd, 20, Util::TimeoutAct::DO_NOTHING)) {
                 continue;
             }
 
-            PacketID p_id = PacketID::EMPTY;
-            msg.clear();
 
-            if(!Util::receive_data(client->conn->fd, &p_id, &msg)) {
+            packet.clear();
+            if(!Util::server_receive(client->conn->fd, &packet)) {
+                log_print(ERROR, "RECEIVE ERROR!");
                 continue;
             }
-            
 
-            printf("%s: %x : '%s'\n",
-                    __func__, p_id, msg.c_str());
 
-            switch(p_id) {
+            if(!is_good_packet(packet)) {
+                continue;
+            }
+
+            switch(packet.id) {
                 case PacketID::LEAVING:
+                    printf("'%s' disconnected.\n", client->name.c_str());
                     sam3CloseConnection(client->conn);
                     client->conn = NULL;
                     m_clients.erase(m_clients.begin() + i);
                     i--;
-                    //Util::send_packet(client->conn->fd, PacketID::LEAVE_OK);
                     break;
 
                 case PacketID::MESSAGE:
+                    if(is_safe_msg(packet.data)) {
+                        //printf("|%s|\n", packet.data.c_str());
+                        std::string msg = "(" + packet.nickname + "): " + packet.data;
+                        broadcast(msg);
+                    }
                     break;
             }
         }
-
-        printf("online: %li\n", m_clients.size());
         m_clients_mutex.unlock();
 
         std::this_thread::sleep_for(
-                std::chrono::milliseconds(1000));
+                std::chrono::milliseconds(100));
     }
 }
 
 
+void Server::broadcast(const std::string& msg) {
+    for(const ServerClient& sc : m_clients) {
+        if(!sc.conn) {
+            continue;
+        }
+        if(sc.conn->fd < 0) {
+            continue;
+        }
+        Util::send_simple_packet(sc.conn->fd, PacketID::MESSAGE, msg.c_str());
+    }
+}
 
 
 // MOVE THIS......
@@ -273,13 +274,13 @@ bool Server::m_verify_client_name(Sam3Connection* conn, const std::string& name)
     bool is_name_ok = false;
 
     if(name.size() > 24) {
-        Util::send_packet(conn->fd, 
+        Util::send_simple_packet(conn->fd, 
                 PacketID::NICKNAME_BAD, "Name is too long.");
         goto out;
     }
     else
     if(name.empty()) {
-        Util::send_packet(conn->fd, 
+        Util::send_simple_packet(conn->fd, 
                 PacketID::NICKNAME_BAD, "Name must not be empty.");
         goto out;
     }
@@ -288,15 +289,29 @@ bool Server::m_verify_client_name(Sam3Connection* conn, const std::string& name)
     for(size_t i = 0; i < name.size(); i++) {
         char b = name[i];
         if((b < 0x20) || (b > 0x7E)) {
-            Util::send_packet(conn->fd, PacketID::NICKNAME_BAD,
+            Util::send_simple_packet(conn->fd, PacketID::NICKNAME_BAD,
                     "Name must have only printable bytes.");
             goto out;
         }
     }
 
-    is_name_ok = true;
-    Util::send_packet(conn->fd, PacketID::NICKNAME_OK);
 
+    // Everything should be fine now
+    // generate session token for the client and continue.
+
+    token_t session_token;
+    if(!RAND_bytes(session_token.data(), session_token.size())) {
+        Util::send_simple_packet(conn->fd, PacketID::NICKNAME_BAD,
+                "Sorry, failed to create session token. Try reconnecting.");
+        goto out;
+    }
+
+    m_name_token_map.insert(std::make_pair(name, session_token));
+
+    Util::send_simple_packet(conn->fd, PacketID::NICKNAME_OK, 
+            std::string(std::begin(session_token), std::end(session_token)));
+
+    is_name_ok = true;
 out:
     return is_name_ok;
 }
@@ -304,17 +319,8 @@ out:
 
 void Server::m_accept_clients_th__func() {
     while(m_threads_running) {
-        /*
-        m_threads_exit_mutex.lock();
-        if(m_threads_exit) {
-            m_threads_exit_mutex.unlock();
-            break;
-        }
-        m_threads_exit_mutex.unlock();
-        */
 
-        m_clients_mutex.lock();
-        Sam3Connection* conn = sam3StreamAccept_timeout(&this->session, 2000);
+        Sam3Connection* conn = sam3StreamAccept_timeout(&this->session, 200);
         if(conn != NULL) {
 
             // On client side, sam3StreamConnection is waiting for response.
@@ -322,40 +328,75 @@ void Server::m_accept_clients_th__func() {
 
             // Ask for nickname.
             ServerClient client(conn);
-            Util::send_packet(conn->fd, PacketID::ASKING_NICKNAME);
+            Util::send_simple_packet(conn->fd, PacketID::ASKING_NICKNAME);
 
             PacketID resp_id = PacketID::EMPTY;
             std::string client_name = "Unknown";
-            if(Util::receive_data(conn->fd, &resp_id, &client_name)
+            if(Util::receive_idnmsg(conn->fd, &resp_id, &client_name)
             && (resp_id == PacketID::NICKNAME)) {
                 if(!m_verify_client_name(conn, client_name)) {
                     sam3CloseConnection(conn); 
                     goto skip_client;
                 }
 
+
                 printf("'%s' connected.\n", client_name.c_str());
 
+        
+                m_clients_mutex.lock();
                 client.name = client_name;
                 m_clients.push_back(client);
+                m_clients_mutex.unlock();
             }
             else {
                 log_print(ERROR, "Failed to get client nickname.");
                 sam3CloseConnection(conn);
             } 
-
-            /*
-            m_clients_mutex.lock();
-            m_clients.puch_back(client);
-            m_clients_mutex.unlock();
-            */
-            // Pass connection to another thread.
         }
         // else: timeout or error.
 
 skip_client:
-        m_clients_mutex.unlock();
         std::this_thread::sleep_for(
-                std::chrono::milliseconds(1000));
+                std::chrono::milliseconds(200));
     }
 }
+        
+bool Server::is_good_packet(const Packet& packet) {
+    if((packet.id < PacketID::EMPTY) || (packet.id >= PacketID::PACKET_MAX)) {
+        log_print(ERROR, "INVALID PACKET ID");
+        return false;
+    }
+
+    if(packet.nickname.size() >= NICKNAME_MAX) {
+        log_print(ERROR, "TOO LONG NAME");
+        return false;
+    }
+
+    const auto search_res = m_name_token_map.find(packet.nickname);
+    if(search_res == m_name_token_map.end()) {
+        log_print(ERROR, "NO TOKEN FOUND");
+        return false;
+    }
+
+    if(search_res->second != packet.session_token) {
+        log_print(ERROR, "INVALID TOKEN");
+        return false;
+    }
+
+
+    return true;
+}
+
+        
+bool Server::is_safe_msg(const std::string& data) {
+    for(size_t i = 0; i < data.size(); i++) {
+        char c = data[i];
+        if((c < 0x20) || (c > 0x7E)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+
 

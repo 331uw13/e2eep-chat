@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
         start_color();
         init_all_colors();
 
-        client.enter_loop();
+        client.enter_interaction_loop();
         close_ncurses();
     }
 

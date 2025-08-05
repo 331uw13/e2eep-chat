@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "client.hpp"
+#include "commands.hpp"
 #include "../../shared/log.hpp"
 #include "../../shared/util.hpp"
 #include "../../shared/colors.hpp"
@@ -58,11 +59,12 @@ bool Client::connect2server(const char* destination, const char* nickname) {
     }
 
 
+
     // Server will ask for user nickname.
    
     PacketID r_id = PacketID::EMPTY;
-    if(!Util::receive_data(this->conn->fd, &r_id, NULL)) {
-        log_print(ERROR, "Server didnt ask for nickname.");
+    if(!Util::receive_idnmsg(this->conn->fd, &r_id, NULL)) {
+        log_print(ERROR, "Server didnt ask for nickname?. %s", this->conn->error);
         return false;
     }
 
@@ -73,12 +75,12 @@ bool Client::connect2server(const char* destination, const char* nickname) {
     }
 
 
-    Util::send_packet(this->conn->fd, PacketID::NICKNAME, nickname);
+    Util::send_simple_packet(this->conn->fd, PacketID::NICKNAME, nickname);
     printf("\033[90m(server is validating nickname...)\033[0m\n");
 
     PacketID name_resp_id = PacketID::EMPTY;
     std::string name_resp_str = ""; // NOTE: Probably want this outside of this scope.
-    if(!Util::receive_data(this->conn->fd, &name_resp_id, &name_resp_str)) {
+    if(!Util::receive_idnmsg(this->conn->fd, &name_resp_id, &name_resp_str)) {
         log_print(ERROR, "Could not receive name verification response.");
         return false;
     }
@@ -89,16 +91,29 @@ bool Client::connect2server(const char* destination, const char* nickname) {
     }
   
 
+    // The session token should be in the name response.
+    if(name_resp_str.size() != TOKEN_SIZE) {
+        log_print(ERROR, "Session token size doesnt match expected size. Try reconnecting?");
+        log_print(ERROR, "Expected size = %li, got %li", TOKEN_SIZE, name_resp_str.size());
+        return false;
+    }
 
+    for(size_t i = 0; i < this->session_token.size(); i++) {
+        this->session_token[i] = (uint8_t)name_resp_str[i];
+    }
+
+    name = nickname;
     m_msgrecv_th = std::thread(&Client::m_msgrecv_th__func, this);
 
 
-    m_running = true;
+    this->running = true;
     return true;
 }
 
 
 void Client::disconnect() {
+    printf("Disconnecting...\n");
+    
     m_threads_running = false;
     m_msgrecv_th.join();
     
@@ -123,26 +138,30 @@ void Client::m_msgrecv_th__func() {
         msg.clear();
         PacketID p_id = PacketID::EMPTY;
 
-        if(!Util::wait_for_socket(this->conn->fd, 1, Util::TimeoutAct::DO_NOTHING)) {
+        if(!Util::socket_ready_inms(this->conn->fd, 200, Util::TimeoutAct::DO_NOTHING)) {
             goto skip_msg;
         }
-        if(!Util::receive_data(this->conn->fd, &p_id, &msg)) {
+        if(!Util::receive_idnmsg(this->conn->fd, &p_id, &msg)) {
+            log_print(ERROR, "Failed to receive data. %s", this->conn->error);
             goto skip_msg;
         }
 
+        //log_print(INFO, "> |%s|", msg.c_str());
+        // Client received a packet from the server...
 
         switch(p_id) {
             case PacketID::MESSAGE:
                 m_msgbuf_mutex.lock();
                 m_msgbuf.push_back((Message) { .name_color = Color::WHITE, .message = msg });
                 m_msgbuf_mutex.unlock();
+                this->redraw = true;
                 break;
 
         }
 
 skip_msg:
         std::this_thread::sleep_for(
-                std::chrono::milliseconds(2000));
+                std::chrono::milliseconds(500));
     }
 }
 
@@ -166,8 +185,9 @@ void Client::m_draw_tui() {
     whline(stdscr, '-', (term_width-input_x)-1);
 
 
+    USE_COLOR(Color::WHITE);
     m_msgbuf_mutex.lock();
-    for(int i = 0; i < m_msgbuf.size(); i++) {
+    for(size_t i = 0; i < m_msgbuf.size(); i++) {
         mvaddstr(i+1, 2, m_msgbuf[i].message.c_str());
     }
     m_msgbuf_mutex.unlock();
@@ -179,29 +199,56 @@ void Client::m_draw_tui() {
 }
 
 
-void Client::enter_loop() {
+void Client::enter_interaction_loop() {
     m_input.clear();
-    m_draw_tui();
+    m_draw_tui(); // getch() will block the first draw.
 
-    while(m_running) {
+    timeout(10);
+
+    while(this->running) {
 
         char input_ch = getch();
-        if((input_ch >= 0x20) && (input_ch <= 0x7E)) {
-            m_input.push_back(input_ch);
+        if(input_ch == ERR) {
+            if(this->redraw) {
+                m_draw_tui();
+                refresh();
+                this->redraw = false;
+            }
+            continue;
         }
 
+        if((input_ch >= 0x20) && (input_ch <= 0x7E)) {
+            /* printable ascii */
+            m_input.push_back(input_ch);
+        }
+        else
         if(input_ch == 0x0A) {
-            if(m_input == "/leave") {
-                Util::send_packet(this->conn->fd, PacketID::LEAVING);
-                m_running = false;
-            }
+            /*<ENTER>*/
 
+            if(!m_input.empty()) {
+                if(m_input[0] == COMMAND_PREFIX) {
+                    CMDHandler::handle_cmd(this, m_input);
+                }
+                else {
+                    /* Normal message */
+                    Packet packet = {
+                        .id = PacketID::MESSAGE,
+                        .data = m_input,
+                        .nickname = name,
+                        .session_token = this->session_token
+                    };
+
+                    Util::send_packet(this->conn->fd, packet);
+                }
+            }
+    
             m_input.clear();
         }
 
         m_draw_tui();
         refresh();
     }
+
 }
 
 

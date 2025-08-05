@@ -1,4 +1,4 @@
-FLAGS = -ggdb -Wall -Wextra -Wno-switch
+FLAGS = -O2 -Wall -Wextra -Wno-switch
 CXX = g++
 CC = cc
 
@@ -12,7 +12,7 @@ C_SRC  = $(shell find ../shared/ext -type f -name *.c)
 OBJS = $(SRC:.cpp=.o)
 C_OBJS = $(C_SRC:.c=.o)
 
-LIBS = -lcurses
+LIBS = -lcurses -lssl -lcrypto
 
 all: $(TARGET_NAME)
 

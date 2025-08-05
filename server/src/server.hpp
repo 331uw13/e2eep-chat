@@ -6,10 +6,14 @@
 #include <mutex>
 #include <thread>
 #include <atomic>
+#include <map>
 //#include <netinet/in.h>
 
 #include "server_client.hpp"
+#include "../../shared/util.hpp"
+#include "../../shared/session_token.hpp"
 #include "../../shared/ext/libsam3.h"
+
 
 
 struct ServerConfig {
@@ -18,6 +22,8 @@ struct ServerConfig {
 
     std::string welcome_msg;
 };
+
+
 
 class Server {
     public:
@@ -28,10 +34,13 @@ class Server {
         Sam3Session session;
         //int sockfd;
         //struct sockaddr_in addr;
+        
+        bool is_good_packet(const Packet& packet);
+        bool is_safe_msg(const std::string& data);
 
+        void broadcast(const std::string& msg);
 
     private:
-
 
         ServerConfig              m_config;
         std::vector<ServerClient> m_clients;
@@ -45,8 +54,12 @@ class Server {
         std::thread  m_packetrecv_th;
         void         m_packetrecv_th__func();
 
+        std::map<std::string, token_t>  m_name_token_map;
 
         bool m_verify_client_name(Sam3Connection* conn, const std::string& name);
+
+
+        // ---- Private functions ----
 };
 
 
