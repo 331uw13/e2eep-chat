@@ -5,6 +5,8 @@
 #include <openssl/evp.h>
 #include <openssl/rand.h>
 
+#include "byte_array.hpp"
+
 //static constexpr size_t IV_LENGTH = 32;
 static constexpr size_t HKDF_SALT_LENGTH = 32;
 static constexpr size_t X25519_KEYLEN = 32;
@@ -34,6 +36,22 @@ namespace Crypto {
 
     // Fills the whole array with 0 and free it after that.
     void free_key(uint8_t** keyptr, size_t length);
+
+    // TODO: Maybe use other than CBC.
+  
+    void add_random_padding(std::string& str);
+
+    uint8_t* Encrypt_AES256CBC(
+            const uint8_t* key,
+            const uint8_t* iv,
+            const std::string& data, size_t* cipher_size);
+
+    std::string Decrypt_AES256CBC(
+            const uint8_t* key,
+            const uint8_t* iv,
+            uint8_t* cipher,
+            size_t cipher_size);
+
 };
 
 

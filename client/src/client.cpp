@@ -114,13 +114,14 @@ bool Client::connect2server(const char* onion_addr, uint16_t port) {
 
     printf("Waiting for response...\n");
     constexpr int CONNECT_RESP_SIZE = 10;
+    constexpr int CONNECT_TIMEOUT_SECONDS = 30;
     int8_t connect_response[CONNECT_RESP_SIZE] = { 0 };
 
-    if(Util::socket_ready_inms(this->sockfd, Util::DEFAULT_TIMEOUT)) {
+    if(Util::socket_ready_inms(this->sockfd, CONNECT_TIMEOUT_SECONDS*1000)) {
         recv(this->sockfd, connect_response, CONNECT_RESP_SIZE, MSG_WAITALL);
     }
     else { 
-        fprintf(stderr, "TIME OUT.\n");
+        fprintf(stderr, "Server didnt respond in %i seconds.\n", CONNECT_TIMEOUT_SECONDS);
         return false;
     }
 

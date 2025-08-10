@@ -2,7 +2,8 @@
 #define CLIENT_UTIL_HPP
 
 #include <cstdint>
-
+#include <string>
+#include <array>
 
 namespace Util {
 
@@ -13,6 +14,7 @@ namespace Util {
     bool socket_ready_inms(int sockfd, int timeout_ms);
     
     int random_int(int min, int max, int* seed);
+
 
 };
 

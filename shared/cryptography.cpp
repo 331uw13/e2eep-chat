@@ -7,7 +7,7 @@
 
 #include "cryptography.hpp"
 #include "log.hpp"
-
+#include "packets.hpp"
 
 /*
 
@@ -196,5 +196,59 @@ void Crypto::free_key(uint8_t** keyptr, size_t length) {
     free(*keyptr);
     *keyptr = NULL;
 }
+    
 
+void Crypto::add_random_padding(std::string& str) {
+    uint8_t numbers[3] = { 0 };
+    RAND_bytes(numbers, 3);
+    int N = abs((numbers[0]+numbers[1]+numbers[2])/3);
+
+    for(int i = 0; i < N; i++) {
+        str.push_back('\0');
+    }
+}
+
+
+
+uint8_t* Crypto::Encrypt_AES256CBC(
+        const uint8_t* key,
+        const uint8_t* iv,
+        const std::string& data,
+        size_t* cipher_size
+){
+    uint8_t* bytes = (uint8_t*)malloc(data.size() + 256);
+    int out_size = 0;
+    int tmp_size = 0;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv);
+    EVP_EncryptUpdate(ctx, bytes, &out_size, (uint8_t*)data.c_str(), data.size());
+    EVP_EncryptFinal_ex(ctx, bytes + out_size, &tmp_size);
+
+    *cipher_size = out_size;
+    EVP_CIPHER_CTX_free(ctx);
+    return bytes;
+}
+
+std::string Crypto::Decrypt_AES256CBC(
+            const uint8_t* key,
+            const uint8_t* iv,
+            uint8_t* cipher,
+            size_t cipher_size
+){
+    std::string output;
+    output.reserve(RECEIVE_MAX_SIZE);
+
+    int out_size = 0;
+    int tmp_size = 0;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key, iv);
+
+    EVP_DecryptUpdate(ctx, (uint8_t*)&output[0], &out_size, cipher, cipher_size);
+    EVP_DecryptFinal_ex(ctx, (uint8_t*)&output[0] + out_size, &tmp_size);
+
+    EVP_CIPHER_CTX_free(ctx);
+    return output;
+}
 
