@@ -8,11 +8,16 @@ class ServerClient {
     public:
 
         int fd;
-        std::string name;
+        std::string nickname;
+        std::string session_token;
 
-        ServerClient(int _fd, const std::string& _name) {
+        std::string public_key_hexstr;
+       
+        bool  accepted;
+
+        ServerClient(int _fd) {
             fd = _fd;
-            name = _name;
+            accepted = false;
         }
 
     private:

@@ -25,6 +25,7 @@ int main(int argc, char** argv) {
 
     log_print(INFO, "Closing logfile and exiting...");
     close_logfile();
+    printf("Exit 0\n");
     return 0;
 }
 

@@ -35,7 +35,6 @@ bool Client::connect2proxy() {
         return false;
     }
 
-
     int connect_result =
         connect(this->sockfd, 
                 (struct sockaddr*)&this->proxyaddr,
@@ -75,7 +74,10 @@ bool Client::connect2server(const char* onion_addr, uint16_t port) {
     if(Util::socket_ready_inms(this->sockfd, Util::DEFAULT_TIMEOUT)) {
         recv(this->sockfd, method_response, 2, MSG_WAITALL);
     }
-    else { return false; }
+    else {
+        fprintf(stderr, "Could not send method packet.\n");
+        return false;
+    }
 
     if(method_response[1] != 0) {
         log_print(ERROR, "Proxy method selection failed.\n");
@@ -155,32 +157,150 @@ bool Client::connect2server(const char* onion_addr, uint16_t port) {
             break;
     }
 
-
-
-    this->test_func();
+    m_server_closed = false;
 
     return (connect_response[1] == 0x00);
 }
 
-
-void Client::test_func() {
-    /*
-    Packet packet = {
-        .iv = "test?123!"
-    };
-
-
-    Packets::send_packet(this->sockfd, packet);
-    */
-}
-
-
 void Client::disconnect() {
+    if(m_has_keypair) {
+        Crypto::free_keypair(&m_keypair);
+    }
     if(this->sockfd > 0) {
         close(this->sockfd);
         this->sockfd = -1;
         printf("Disconnected.\n");
     }
 }
+
+bool Client::verify_join(const char* nickname) {
+    bool result = false;   
+
+    printf("Waiting for verify response...\n");
+    Packets::send_packet(this->sockfd, PacketID::VERIFY_JOIN, 
+            { nickname, bytes_to_hexstr(m_keypair.public_key, X25519_KEYLEN) });
+
+    if(!Util::socket_ready_inms(this->sockfd, 30*1000)) {
+        log_print(ERROR, "Waited too long for server to verifyn join...");
+        return false;
+    }
+
+    std::array<char, RECEIVE_MAX_SIZE> recv_data;
+    if(!Packets::receive_data(this->sockfd, &recv_data)) {
+        printf("< Server closed >\n");
+        return false;
+    }
+    
+    Packet packet;
+    if(!Packets::parse_data(&packet, recv_data.data())) {
+        log_print(ERROR, "Failed to parse data.");
+        return false;
+    }
+
+    if(!packet.elements[0].empty()) {
+        fprintf(stderr, "\033[31mServer: %s\033[0m\n", packet.elements[0].c_str());
+    }
+
+    return (packet.id == PacketID::JOIN_ACCEPTED);
+}
+
+void Client::m_recv_data_th__func() {
+    Packet packet;
+    std::array<char, RECEIVE_MAX_SIZE> recv_data;
+
+    while(!m_threads_exit) {
+        
+        if(Util::socket_ready_inms(this->sockfd, 500)) {
+
+            if(!Packets::receive_data(this->sockfd, &recv_data)) {
+                m_server_closed = true;
+                printf("< Server closed >\n");
+                break;
+            }
+            
+            printf("GOT:|%s|\n", recv_data.data());
+
+            if(!Packets::parse_data(&packet, recv_data.data())) {
+                continue;
+            }
+
+            switch(packet.id) {
+                case PacketID::ERROR_MESSAGE:
+                    if(packet.num_elements > 0) {
+                        fprintf(stderr, "\033[31mServer: %s\033[0m\n", packet.elements[0].c_str());
+                    }
+                    break;
+
+                case PacketID::JOIN_ACCEPTED:
+                    break;
+
+                case PacketID::JOIN_DENIED:
+                    break;
+
+                    // Message from another client.
+                case PacketID::MESSAGE:
+                    break;
+            }
+
+            packet.clear();
+            //m_msg_queue_mutex.lock();
+            //m_msg_queue_mutex.unlock();
+        }
+
+        std::this_thread::sleep_for(
+                std::chrono::milliseconds(500));
+    }
+}
+
+void Client::generate_keys() {
+    if(m_has_keypair) {
+        Crypto::free_keypair(&m_keypair);
+    }
+    m_keypair = Crypto::new_keypair_x25519();
+    m_has_keypair = true;
+}
+
+
+void Client::m_send_test() {
+
+    std::string message = "the message reads here, or does it?";
+
+
+
+}
+
+void Client::enter_interaction_loop() {
+    
+    m_recv_data_th = std::thread(&Client::m_recv_data_th__func, this);
+
+    while(true) {
+        // Temporary for testing purposes.
+
+        char input_buf[16+1] = { 0 };
+        size_t read_len = read(1, input_buf, 16);
+
+        if(read_len <= 1) {
+            continue;
+        }
+
+        if(strcmp(input_buf, "end\n") == 0) {
+            m_threads_exit = true;
+            break;
+        }
+        else
+        if(strcmp(input_buf, "send\n") == 0) {
+            m_send_test();
+        }
+
+
+
+    }
+
+    printf("Disconnecting...\n");
+    m_threads_exit = true;
+    m_recv_data_th.join();
+}
+
+
 
 

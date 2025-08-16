@@ -7,16 +7,17 @@
 #include <thread>
 #include <atomic>
 #include <netinet/in.h>
+#include <array>
 
 #include "server_client.hpp"
-
+#include "../../shared/cryptography.hpp"
+#include "../../shared/packets.hpp"
 
 
 struct ServerConfig {
     uint32_t max_clients;
     int port;
 };
-
 
 class Server {
     public:
@@ -31,6 +32,7 @@ class Server {
 
 
     private:
+
         ServerConfig              m_config;
         std::vector<ServerClient> m_clients;
         std::mutex                m_clients_mutex;
@@ -42,6 +44,8 @@ class Server {
         void         m_receive_th__func();
 
         std::atomic<bool>   m_threads_exit;
+
+        bool m_verify_client_join(ServerClient& sc, const Packet& packet);
 };
 
 

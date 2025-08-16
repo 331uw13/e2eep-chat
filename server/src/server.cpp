@@ -10,7 +10,7 @@
 #include "server.hpp"
 #include "../../shared/log.hpp"
 #include "../../shared/util.hpp"
-#include "../../shared/packets.hpp"
+//#include "../../shared/packets.hpp"
 
 
 
@@ -80,15 +80,10 @@ bool Server::start(const ServerConfig& config) {
             if(strcmp(buf, "online\n") == 0) {
                 printf("Clients online: %li / %i\n", m_clients.size(), m_config.max_clients);
             }
-            else
-            if(strcmp(buf, "msgs\n") == 0) {
-                printf("no messages.\n");
-            }
             else {
                 printf("Unknown command. Commands are:\n"
                         "'end'      : shutdown server.\n"
                         "'online'   : number of clients online\n"
-                        "'msgs'     : read messages from clients\n"
                         );
             }
         }
@@ -118,18 +113,21 @@ void Server::stop() {
     }
 }
 
-
 // TODO: Optimize thread delays.
 //      - make them slower if there is no traffic in X amout of seconds / minutes.
 //      - make them faster if there is alot of traffic.
 
-
 void Server::m_receive_th__func() {
+    std::array<char, RECEIVE_MAX_SIZE> recv_data;
+    Packet packet;
+    // TODO:
+    // * clear recv_data after use.
+    //
     while(!m_threads_exit) {
 
         m_clients_mutex.lock();
-
         for(ServerClient& sc : m_clients) {
+
             if(sc.fd < 0) {
                 continue;
             }
@@ -137,24 +135,82 @@ void Server::m_receive_th__func() {
                 continue;
             }
 
+            if(!Packets::receive_data(sc.fd, &recv_data)) {
+                close(sc.fd);
+                sc.fd = -1;
+                printf("Client disconnected.\n");
+                continue;
+            }
 
-            char buf[RECEIVE_MAX_SIZE+1] = { 0 };
-            recv(sc.fd, buf, RECEIVE_MAX_SIZE, MSG_WAITALL);
+            printf("\033[90mGOT: %s\033[0m\n", recv_data.data());
 
-            printf("GOT:|%s|\n", buf);
+            if(!Packets::parse_data(&packet, recv_data.data())) {
+                continue;
+            }
 
+            if(!sc.accepted && (packet.id != PacketID::VERIFY_JOIN)) {
+                Packets::send_packet(sc.fd, PacketID::ERROR_MESSAGE, { "PLEASE VERIFY" });
+                continue;
+            }
 
-            // REMOVE THIS FROM HERE.
-            printf("\033[90mClosing connection...\033[0m\n\n");
-            close(sc.fd);
-            sc.fd = -1;
+            printf("ID = %i\n", packet.id);
+            printf("Elements = %i\n", packet.num_elements);
+            for(size_t i = 0; i < packet.num_elements; i++) {
+                printf("%li -> %s\n", i, packet.elements[i].c_str());
+            }
+
+            switch(packet.id) {
+
+                case PacketID::VERIFY_JOIN:
+                    if(!m_verify_client_join(sc, packet)) {
+                        continue;
+                    }
+                    break;
+
+                case PacketID::MESSAGE:
+                    break;
+
+                case PacketID::ASKING_PUBLIC_KEYS:
+                    break;
+            }
+        
         }
 
         m_clients_mutex.unlock();
-
         std::this_thread::sleep_for(
-                std::chrono::milliseconds(500));
+                std::chrono::milliseconds(100));
     }
+}
+        
+bool Server::m_verify_client_join(ServerClient& sc, const Packet& packet) {
+    if(packet.num_elements != 2) {
+        Packets::send_packet(sc.fd, PacketID::ERROR_MESSAGE, { "REQUEST NOT ACCEPTED" });
+        return false;
+    }
+    
+    const std::string& name = packet.elements[0];
+    if(name.size() > 24) {
+        Packets::send_packet(sc.fd, PacketID::ERROR_MESSAGE, { "NICKNAME TOO LONG" });
+        return false;
+    }
+
+    if(name.empty()) {
+        uint8_t randbytes[2] = { 0 };
+        RAND_bytes(randbytes, 2);
+        sc.nickname = "unknown-";
+        for(int i = 0; i < 2; i++) {
+            sc.nickname += std::to_string(randbytes[i]);
+        }
+    }
+    else {
+        sc.nickname = name;
+    }
+
+    printf("%s: %s OK.\n", __func__, sc.nickname.c_str());
+    sc.accepted = true;
+    sc.public_key_hexstr = packet.elements[1];
+    Packets::send_packet(sc.fd, PacketID::JOIN_ACCEPTED, {});
+    return true;
 }
 
 void Server::m_accept_clients_th__func() {
@@ -171,8 +227,8 @@ void Server::m_accept_clients_th__func() {
                 log_print(ERROR, "Failed to accept client.");   
             }
 
-            printf("Client accepted!\n");
-            ServerClient server_client(client_fd, "test_user");
+            printf("Client connected!\n");
+            ServerClient server_client(client_fd);
 
             m_clients_mutex.lock();
             m_clients.push_back(server_client);
