@@ -37,16 +37,17 @@ namespace Crypto {
     // Fills the whole array with 0 and free it after that.
     void free_key(uint8_t** keyptr, size_t length);
 
-    // TODO: Maybe use other than CBC.
-  
     void add_random_padding(std::string& str);
+   
+    ByteArray hmac_signature(uint8_t* cipher, size_t cipher_size, uint8_t* shared_key, size_t shared_key_size);
 
-    uint8_t* Encrypt_AES256CBC(
+
+    uint8_t* encrypt_AES256CBC(
             const uint8_t* key,
             const uint8_t* iv,
             const std::string& data, size_t* cipher_size);
 
-    std::string Decrypt_AES256CBC(
+    std::string decrypt_AES256CBC(
             const uint8_t* key,
             const uint8_t* iv,
             uint8_t* cipher,

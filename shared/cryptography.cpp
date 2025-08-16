@@ -4,6 +4,7 @@
 #include <openssl/kdf.h>
 #include <openssl/core_names.h>
 #include <openssl/ec.h>
+#include <openssl/hmac.h>
 
 #include "cryptography.hpp"
 #include "log.hpp"
@@ -210,7 +211,7 @@ void Crypto::add_random_padding(std::string& str) {
 
 
 
-uint8_t* Crypto::Encrypt_AES256CBC(
+uint8_t* Crypto::encrypt_AES256CBC(
         const uint8_t* key,
         const uint8_t* iv,
         const std::string& data,
@@ -230,14 +231,14 @@ uint8_t* Crypto::Encrypt_AES256CBC(
     return bytes;
 }
 
-std::string Crypto::Decrypt_AES256CBC(
+std::string Crypto::decrypt_AES256CBC(
             const uint8_t* key,
             const uint8_t* iv,
             uint8_t* cipher,
             size_t cipher_size
 ){
     std::string output;
-    output.reserve(RECEIVE_MAX_SIZE);
+    output.reserve(RECEIVE_MAX_SIZE); //<- NOTE: May be dangerous!
 
     int out_size = 0;
     int tmp_size = 0;
@@ -250,5 +251,22 @@ std::string Crypto::Decrypt_AES256CBC(
 
     EVP_CIPHER_CTX_free(ctx);
     return output;
+}
+
+ByteArray Crypto::hmac_signature(
+        uint8_t* cipher,
+        size_t cipher_size,
+        uint8_t* shared_key,
+        size_t shared_key_size
+){
+    ByteArray result;
+    result.allocate(EVP_MAX_MD_SIZE);
+
+    uint32_t md_len = 0;
+    HMAC(EVP_sha512(), shared_key, shared_key_size,
+            cipher, cipher_size, result.data, &md_len);
+    result.size = (size_t)md_len;
+
+    return result;
 }
 

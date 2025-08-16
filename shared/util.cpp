@@ -24,7 +24,7 @@ bool Util::socket_ready_inms(int sockfd, int timeout_ms) {
         log_print(ERROR, "%s", strerror(errno));
     }
 
-    return (result > 0);
+    return (result == 1);
 }
 
 

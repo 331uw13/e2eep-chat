@@ -34,16 +34,15 @@ ByteArray hexstr_to_bytes(const std::string& hexstr) {
 }
 
 std::string bytes_to_hexstr(uint8_t* bytes, size_t size) {
+    if(!bytes || (size == 0)) {
+        return "";
+    }
     std::string str = "";
     str.reserve(256);
 
     const char* HEX = "0123456789abcdef";
 
     for(size_t i = 0; i < size; i++) {
-        if(bytes[i] < 0) {
-            str.push_back('-');
-        }
-
         str.push_back(HEX[ (abs(bytes[i]) >> 4) % 0xf ]);
         str.push_back(HEX[ (abs(bytes[i])) & 0xf ]);
         str.push_back(HEX_SEPARATOR);
